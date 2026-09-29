@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+  <meta name="theme-color" content="#151219">
+  <title>啵啵贝控制桥</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #f5eef6;
+      --muted: #b9abbc;
+      --glass: rgba(39, 31, 44, .78);
+      --line: rgba(255, 255, 255, .11);
+      --accent: #d7a7c7;
+      --danger: #d8848c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 20% 15%, rgba(152, 112, 164, .23), transparent 38%),
+        radial-gradient(circle at 84% 78%, rgba(102, 142, 151, .18), transparent 42%),
+        #151219;
+      color: var(--ink);
+    }
+    .card {
+      width: min(100%, 430px);
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--glass);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .35);
+      backdrop-filter: blur(22px);
+    }
+    h1 { margin: 0 0 6px; font-size: 22px; }
+    .sub, .hint, #status { color: var(--muted); font-size: 13px; line-height: 1.55; }
+    #status { min-height: 20px; margin: 15px 0; }
+    .gate { display: grid; gap: 10px; }
+    input[type="password"] {
+      width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px;
+      background: rgba(0, 0, 0, .2); color: var(--ink); font-size: 16px;
+    }
+    button {
+      border: 0; border-radius: 999px; padding: 12px 16px; font: inherit; font-weight: 650;
+      background: var(--accent); color: #271c27;
+    }
+    button:disabled { opacity: .45; }
+    #controls[hidden], #tokenGate[hidden] { display: none; }
+    .channel { margin-top: 21px; }
+    .channel-head { display: flex; justify-content: space-between; margin-bottom: 10px; }
+    input[type="range"] { width: 100%; accent-color: var(--accent); }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 24px; }
+    .stop { background: var(--danger); color: #2d171a; }
+    .hint { margin: 16px 0 0; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>啵啵贝控制桥</h1>
+    <div class="sub">Bluefy / Android Chrome · SOSEXY · 微电流已锁定</div>
+
+    <section class="gate" id="tokenGate">
+      <p class="hint">输入这台控制页的独立令牌。令牌只保存在本机浏览器。</p>
+      <input id="pageToken" type="password" autocomplete="off" placeholder="控制页令牌">
+      <button id="saveToken" type="button">进入控制页</button>
+    </section>
+
+    <section id="controls" hidden>
+      <div id="status">尚未连接</div>
+      <button id="connect" type="button">连接啵啵贝</button>
+
+      <div class="channel">
+        <div class="channel-head"><span>吮吸</span><span><b id="suckValue">0</b>/100</span></div>
+        <input id="suckRange" type="range" min="0" max="100" value="0">
+      </div>
+      <div class="channel">
+        <div class="channel-head"><span>震动</span><span><b id="vibeValue">0</b>/30</span></div>
+        <input id="vibeRange" type="range" min="0" max="30" value="0">
+      </div>
+
+      <div class="actions">
+        <button class="stop" id="stop" type="button">全部停止</button>
+        <button id="forgetToken" type="button">更换令牌</button>
+      </div>
+      <p class="hint">页面保持前台。断线、重连、租约到期或服务重启都会回到 0。</p>
+    </section>
+  </main>
+
+  <script src="/gptmcp/succhia-controller.js"></script>
+  <script>
+    const gate = document.getElementById("tokenGate");
+    const controls = document.getElementById("controls");
+    const tokenInput = document.getElementById("pageToken");
+    const statusEl = document.getElementById("status");
+    const connectButton = document.getElementById("connect");
+    const sliders = {
+      suck: document.getElementById("suckRange"),
+      vibe: document.getElementById("vibeRange"),
+    };
+    const values = {
+      suck: document.getElementById("suckValue"),
+      vibe: document.getElementById("vibeValue"),
+    };
+    let controller = null;
+
+    function render(state) {
+      for (const channel of ["suck", "vibe"]) {
+        sliders[channel].value = state[channel];
+        values[channel].textContent = state[channel];
+      }
+      connectButton.textContent = state.connected ? "安全断开" : "连接啵啵贝";
+    }
+
+    function buildController(token) {
+      return SucchiaBridge.createSucchiaController({
+        bluetooth: navigator.bluetooth,
+        fetch: window.fetch.bind(window),
+        apiBase: "/gptmcp/succhia-api",
+        apiToken: token,
+        onState: render,
+        onStatus: message => { statusEl.textContent = message; },
+      });
+    }
+
+    async function enter(token) {
+      controller = buildController(token);
+      await controller.status();
+      localStorage.setItem("succhia_page_token", token);
+      gate.hidden = true;
+      controls.hidden = false;
+      render(controller.snapshot());
+    }
+
+    document.getElementById("saveToken").addEventListener("click", async () => {
+      statusEl.textContent = "";
+      try { await enter(tokenInput.value.trim()); }
+      catch (error) { alert(error.status === 401 ? "令牌不正确" : error.message); }
+    });
+
+    connectButton.addEventListener("click", async () => {
+      connectButton.disabled = true;
+      try {
+        if (controller.snapshot().connected) await controller.disconnect();
+        else {
+          await controller.connect();
+          controller.startPolling();
+          controller.startPatternLoop();
+          controller.startWatchdog();
+        }
+      } catch (error) { statusEl.textContent = "连接失败：" + error.message; }
+      finally { connectButton.disabled = false; }
+    });
+
+    for (const channel of ["suck", "vibe"]) {
+      sliders[channel].addEventListener("change", () => {
+        controller.setManual(channel, Number(sliders[channel].value))
+          .catch(error => { statusEl.textContent = "设置失败：" + error.message; });
+      });
+    }
+
+    document.getElementById("stop").addEventListener("click", () => {
+      controller.stop().catch(error => { statusEl.textContent = "停止失败：" + error.message; });
+    });
+    document.getElementById("forgetToken").addEventListener("click", () => {
+      if (controller) controller.destroy();
+      localStorage.removeItem("succhia_page_token");
+      controls.hidden = true;
+      gate.hidden = false;
+      tokenInput.value = "";
+    });
+
+    const remembered = localStorage.getItem("succhia_page_token");
+    if (remembered) enter(remembered).catch(() => localStorage.removeItem("succhia_page_token"));
+  </script>
+</body>
+</html>
