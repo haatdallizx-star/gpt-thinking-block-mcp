@@ -3,8 +3,13 @@ services:
     build: .
     restart: unless-stopped
     ports:
+      # The loopback prefix is the exposure boundary. Dropping it publishes an
+      # unauthenticated server to every host on the network.
       - "127.0.0.1:${PORT:-8787}:8787"
     environment:
+      # Inside the container this must be 0.0.0.0 for the port mapping above to
+      # reach it; the container's own network namespace is the isolation.
+      MCP_BIND: "0.0.0.0"
       CAPTURE_ENABLED: "${CAPTURE_ENABLED:-0}"
       CAPTURE_DIR: /data/captured
       THINKING_PROMPT_LANGUAGE: "${THINKING_PROMPT_LANGUAGE:-en}"
