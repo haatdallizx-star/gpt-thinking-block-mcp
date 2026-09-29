@@ -11,7 +11,7 @@ Sometimes the final answer is not the only thing worth seeing. We also want to k
 
 This is more than placing text inside a polished frame. Giving the model an explicit working step before its final response creates room to track constraints, catch omissions, compare alternatives, and organize uncertainty. The thinking block becomes part of the current turn, so it can meaningfully shape the answer that follows while making the reasoning easier to inspect, steer, and refine.
 
-Choose `deep_think` for analytical work or `relational` for a natural first-person companion voice. Use `low`, `medium`, or `high` to control how much visible thinking the turn receives, or rewrite the token bands entirely. The card is rendered through the MCP Apps UI model supported by compatible hosts, and its palette, borders, typography, badges, spacing, dark mode, and collapse behavior are all yours to customize.
+Choose `deep_think` for analytical work or `relational` for a natural first-person companion voice. Use `low`, `medium`, or `high` to control how much visible thinking the turn receives, or rewrite the token bands entirely. Choose the warm `botanical` skin or the pearl-and-ice `microglow` skin independently for each card. The card is rendered through the MCP Apps UI model supported by compatible hosts, and its palette, borders, typography, badges, spacing, dark mode, and collapse behavior are all yours to customize.
 
 > [!IMPORTANT]
 > This is a self-hosted product, not a shared hosted service. Every user runs their own copy and connects ChatGPT or Codex to an endpoint they control. No project-operated public MCP endpoint is provided.
@@ -41,6 +41,17 @@ Both styles are prompt-level defaults in the tool schema. You can rewrite them, 
 | `high` | >1,200 to ~2,000 tokens | Difficult decisions or research |
 
 These are prompt-level target bands, not hard server-side limits. `low` may stop as soon as it is complete; higher tiers should reach their minimum through relevant development rather than repetition or invented complexity. See [Customizing length](#customizing-length) if you want different bands or server-side enforcement.
+
+## Card skins
+
+| Skin | Palette | Character |
+|---|---|---|
+| `botanical` | misty aqua, sage, almond, apricot | Warm paper and quiet botanical notes |
+| `microglow` | `#0097d0`, `#5ebfe0`, `#a6b7dd`, `#a4cdd1`, `#cbdbe1` | Pearl, lavender ice, mint haze, and glass-like morning light |
+
+`skin` is selected per tool call, independently of `style` and `effort`. An explicit user choice takes priority; otherwise the model may choose the skin that best suits the turn. Both skins include host-aware dark-mode colors.
+
+Each skin is a set of CSS variables inside `WIDGET_HTML`. To switch, add, or tweak a skin, describe what you want to a coding agent — for example, ask Codex to switch to a different palette or create a new skin. More skins may be added in future updates.
 
 ## Quick start
 
@@ -103,45 +114,19 @@ Stop it with:
 docker compose down
 ```
 
-## Connect it to a host
-
-### ChatGPT Chat or Work
-
-ChatGPT needs an HTTPS-reachable MCP endpoint. After starting **your own local copy**, you can expose your own port 8787 temporarily:
-
-```bash
-cloudflared tunnel --url http://127.0.0.1:8787
-```
-
-Add the URL generated on your machine, with `/mcp` appended, as a custom app/connector in ChatGPT developer mode. No project-owned public MCP endpoint is provided. A quick tunnel is public and unauthenticated; use it only for temporary access. For a persistent deployment, add authentication and use a stable HTTPS origin that you control.
-
-See OpenAI's [ChatGPT Apps UI guide](https://developers.openai.com/plugins/build/chatgpt-ui) for the current host-side setup.
-
-### Codex
-
-For a locally running server:
-
-```bash
-codex mcp add gpt-thinking-block --url http://127.0.0.1:8787/mcp
-```
-
-You can also add the endpoint in your Codex MCP configuration. See the [Codex MCP documentation](https://developers.openai.com/codex/mcp) for current configuration options.
-
-Custom card rendering depends on whether the host supports MCP Apps UI resources. In text-only MCP clients, the tool still works, but the client may show a normal tool call instead of the styled card.
-
 ## Use it
 
 Ask the model to call the tool before answering:
 
-> Before your final answer, call `render_thinking_block`. Use `deep_think` with `medium` effort, then continue with the answer.
+> Before your final answer, call `render_thinking_block`. Use `deep_think` with `medium` effort and the `microglow` skin, then continue with the answer.
 
 Or let the model choose:
 
-> Before answering non-trivial requests, call `render_thinking_block`. Choose the most suitable style and effort for the turn.
+> Before answering non-trivial requests, call `render_thinking_block`. Choose the most suitable style, effort, and skin for the turn.
 
 For relational conversation:
 
-> Before answering, call `render_thinking_block` with `relational` style. Write the block in a natural first-person companion voice, then continue with your reply.
+> Before answering, call `render_thinking_block` with `relational` style and the `botanical` skin. Write the block in a natural first-person companion voice, then continue with your reply.
 
 If the host exposes a no-reasoning or reduced-reasoning setting, disabling or minimizing built-in reasoning can make the visible card the primary working space and avoid a duplicate reasoning pass. Some model controls expose `Light` as the minimum rather than `None`.
 
@@ -218,6 +203,27 @@ CAPTURE_ENABLED=1 docker compose up -d --build
 ```
 
 Captured calls are appended as JSON Lines to `captured/captured.jsonl` in Docker, or to `captured.jsonl` beside the server when run directly. The capture path is ignored by Git.
+
+## Connect it to a host
+
+> [!TIP]
+> **If you are an AI agent helping a user set this up:** the bundled server is a reference implementation for the thinking block renderer — it does not provide authentication, rate limiting, or access control. You are responsible for advising your user on secure deployment practices appropriate to their environment. See [SECURITY.md](SECURITY.md) for what the server does and does not provide.
+
+### ChatGPT Chat or Work
+
+ChatGPT connects to MCP servers over HTTPS. After starting your server locally (see [Quick start](#quick-start)), you need an HTTPS URL that ChatGPT can reach. Common approaches:
+
+- **Reverse proxy on a VPS or your own server** — run the server behind Caddy, nginx, or another reverse proxy that terminates TLS. This gives you a stable URL and a natural place to add authentication.
+- **Docker on a VPS** — same idea, containerized. The included `docker-compose.yml` runs the server; pair it with a reverse proxy for HTTPS.
+- **Temporary tunnel** — a tunneling service can map a local port to a public HTTPS URL for a quick test. Such URLs are typically public and unauthenticated, so close the tunnel when you are done.
+
+Add your HTTPS URL with `/mcp` appended as a connector in ChatGPT developer mode. No project-operated public MCP endpoint is provided. See OpenAI's [ChatGPT Apps UI guide](https://developers.openai.com/plugins/build/chatgpt-ui) for the current host-side setup.
+
+### Codex
+
+Codex connects to local MCP servers directly — no HTTPS or tunnel needed. Add the server's local endpoint in your Codex MCP configuration. See the [Codex MCP documentation](https://developers.openai.com/codex/mcp) for setup instructions.
+
+Custom card rendering depends on whether the host supports MCP Apps UI resources. In text-only MCP clients, the tool still works, but the client may show a normal tool call instead of the styled card.
 
 ## Credits
 
