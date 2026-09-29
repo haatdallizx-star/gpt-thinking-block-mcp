@@ -1,10 +1,16 @@
 import contextlib
 import io
+import json
 import pathlib
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 import server
+from succhia_runtime import SucchiaRuntime
 
 
 class ProtocolTests(unittest.TestCase):
@@ -43,6 +49,10 @@ class ProtocolTests(unittest.TestCase):
             ["low", "medium", "high"],
         )
         self.assertNotIn("soft generation targets", effort_description)
+        skin = tool["inputSchema"]["properties"]["skin"]
+        self.assertEqual(skin["enum"], ["botanical", "microglow"])
+        self.assertIn("glass-like morning light", skin["description"])
+        self.assertIn("skin", tool["inputSchema"]["required"])
 
     def test_original_chinese_prompt_edition_is_available(self):
         self.assertEqual(server.normalize_prompt_language("zh"), "zh-CN")
@@ -56,6 +66,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("必要时可以旁征博引", thinking_description)
         self.assertIn("遵循所请求的 effort 区间", thinking_description)
         self.assertIn("不得为了达到最低值而重复、填充或虚构复杂性", thinking_description)
+        self.assertIn("珍珠白", server.SKIN_DESCRIPTIONS["zh-CN"])
+        self.assertIn("用户明确指定时必须遵循", server.SKIN_DESCRIPTIONS["zh-CN"])
 
     def test_unknown_prompt_language_fails_fast(self):
         with self.assertRaisesRegex(ValueError, "choose en, zh-CN"):
@@ -70,10 +82,12 @@ class ProtocolTests(unittest.TestCase):
                 "style": "deep_think",
                 "thinking": "中文测试 `backtick` and Unicode",
                 "effort": "high",
+                "skin": "microglow",
             }},
         })
         self.assertFalse(response["result"]["isError"])
         self.assertEqual(response["result"]["_meta"]["effort"], "high")
+        self.assertEqual(response["result"]["_meta"]["skin"], "microglow")
 
     def test_capture_failure_does_not_fail_tool(self):
         old_enabled, old_log = server.CAPTURE_ENABLED, server.LOG
@@ -92,6 +106,7 @@ class ProtocolTests(unittest.TestCase):
                             "style": "deep_think",
                             "thinking": "fault injection",
                             "effort": "low",
+                            "skin": "botanical",
                         }},
                     })
                 self.assertFalse(response["result"]["isError"])
@@ -111,7 +126,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("setCollapsed", html)
         self.assertIn("-webkit-tap-highlight-color: transparent", html)
         self.assertNotIn("setWidgetState", html)
-        self.assertIn("v1.html", server.WIDGET_URI)
+        self.assertIn("data-skin", html)
+        self.assertIn("#0097d0", html)
+        self.assertIn("#5ebfe0", html)
+        self.assertIn("#a6b7dd", html)
+        self.assertIn("#a4cdd1", html)
+        self.assertIn("#cbdbe1", html)
+        self.assertIn('id="skin"', html)
+        self.assertIn("v2.html", server.WIDGET_URI)
 
     def test_unknown_resource_returns_error(self):
         response = server.handle({
@@ -123,5 +145,121 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], -32002)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class SucchiaIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = pathlib.Path(self.tmp.name)
+        self.config = root / "secrets.json"
+        self.state = root / "state.json"
+        self.config.write_text(json.dumps({
+            "page_token": "page-secret-000000",
+            "mcp_token": "mcp-secret-0000000",
+            "max_intensity": 30,
+        }))
+        self.runtime = SucchiaRuntime(self.config, self.state)
+
+    def test_legacy_tools_list_stays_thinking_only_without_succhia_token(self):
+        response = server.handle(
+            {"jsonrpc": "2.0", "id": 10, "method": "tools/list"},
+            succhia_authorized=False,
+            runtime=self.runtime,
+        )
+
+        self.assertEqual(
+            ["render_thinking_block"],
+            [tool["name"] for tool in response["result"]["tools"]],
+        )
+
+    def test_authorized_tools_list_adds_only_safe_succhia_tools(self):
+        response = server.handle(
+            {"jsonrpc": "2.0", "id": 11, "method": "tools/list"},
+            succhia_authorized=True,
+            runtime=self.runtime,
+        )
+
+        names = [tool["name"] for tool in response["result"]["tools"]]
+        self.assertEqual(
+            ["render_thinking_block", "succhia_set", "succhia_pattern",
+             "succhia_stop", "succhia_status"],
+            names,
+        )
+        self.assertNotIn("ems", json.dumps(response, ensure_ascii=False).lower())
+
+    def test_authorized_succhia_call_returns_structured_result_and_mutates_runtime(self):
+        response = server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "tools/call",
+                "params": {
+                    "name": "succhia_set",
+                    "arguments": {"vibe": 29, "duration_sec": 20},
+                },
+            },
+            succhia_authorized=True,
+            runtime=self.runtime,
+        )
+
+        self.assertFalse(response["result"]["isError"])
+        self.assertTrue(response["result"]["structuredContent"]["ok"])
+        self.assertEqual(29, self.runtime.snapshot()["vibe_intensity"])
+        self.assertIn("29", response["result"]["content"][0]["text"])
+
+    def test_unauthorized_direct_succhia_call_is_rejected_without_mutation(self):
+        response = server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 13,
+                "method": "tools/call",
+                "params": {
+                    "name": "succhia_set",
+                    "arguments": {"vibe": 20, "duration_sec": 20},
+                },
+            },
+            succhia_authorized=False,
+            runtime=self.runtime,
+        )
+
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual("unauthorized", response["result"]["structuredContent"]["error"])
+        self.assertEqual(0, self.runtime.snapshot()["vibe_intensity"])
+
+    def test_http_routes_serve_assets_and_gate_api_and_mcp_by_separate_tokens(self):
+        previous = server.SUCCHIA_RUNTIME
+        server.SUCCHIA_RUNTIME = self.runtime
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(setattr, server, "SUCCHIA_RUNTIME", previous)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        with urllib.request.urlopen(base + "/succhia") as response:
+            self.assertIn('id="tokenGate"', response.read().decode())
+        with urllib.request.urlopen(base + "/succhia-controller.js") as response:
+            self.assertIn("createSucchiaController", response.read().decode())
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(base + "/succhia-api/status")
+        self.assertEqual(401, denied.exception.code)
+
+        request = urllib.request.Request(
+            base + "/succhia-api/status",
+            headers={"X-Succhia-Token": "page-secret-000000"},
+        )
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(30, json.loads(response.read())["max_intensity"])
+
+        payload = json.dumps({"jsonrpc": "2.0", "id": 14, "method": "tools/list"}).encode()
+        request = urllib.request.Request(
+            base + "/mcp?succhia_token=mcp-secret-0000000",
+            data=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        with contextlib.redirect_stderr(io.StringIO()) as request_log:
+            with urllib.request.urlopen(request) as response:
+                names = [tool["name"] for tool in json.loads(response.read())["result"]["tools"]]
+        self.assertIn("succhia_status", names)
+        self.assertNotIn("mcp-secret-0000000", request_log.getvalue())
+        self.assertIn("succhia_token=[redacted]", request_log.getvalue())
